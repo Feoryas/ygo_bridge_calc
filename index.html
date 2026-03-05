@@ -259,6 +259,7 @@ input[type=range] {
 .tag-b    { background: var(--b-bg);     color: var(--b); }
 .tag-mix  { background: var(--bg3);      color: var(--dim); }
 .tag-neu  { background: var(--bg3);      color: var(--dim); }
+.tag-brk  { background: #1a0a0a;         color: #ff5f5f66; }
 .row-name { font-size: 11px; }
 .row-sub  { font-size: 9px; color: var(--dim); margin-top: 1px; }
 .hi { color: var(--gold); }
@@ -592,7 +593,7 @@ function calculate() {
     }
   }
 
-  // Mixed hands
+  // Mixed hands (starters from BOTH archetypes)
   let expMixed = 0, pMixed = 0;
   for (let as_ = 1; as_ <= Math.min(aStarters, handSize); as_++)
     for (let ae = 0; ae <= Math.min(aEngine, handSize-as_); ae++)
@@ -605,12 +606,37 @@ function calculate() {
           pMixed += p;
         }
 
-  // Neutral-only
-  let expNeutral = 0, pNeutral = 0;
-  if (neutral >= handSize) {
-    pNeutral   = comb(neutral, handSize) / totalHands;
-    expNeutral = pNeutral * handSize;
-  }
+  const pPureA = stats.aWith.prob + stats.aNo.prob;
+  const pPureB = stats.bWith.prob + stats.bNo.prob;
+  // Brick = everything remaining: cross-archetype engine hands + neutral-only
+  const pBrick = 1 - pPureA - pPureB - pMixed;
+  const expBrick = 1 - pPureA - pPureB - pMixed > 0
+    ? (function() {
+        // enumerate brick hands: neutral-only + mixed-engine (no starters from at least one side)
+        let exp = 0;
+        // neutral-only
+        if (neutral >= handSize) exp += comb(neutral, handSize) / totalHands * handSize;
+        // cross-archetype engine hands (A cards + B cards but missing at least one starter)
+        for (let as_ = 0; as_ <= Math.min(aStarters, handSize); as_++)
+          for (let ae = 0; ae <= Math.min(aEngine, handSize-as_); ae++) {
+            if (as_ + ae === 0) continue;
+            for (let bs = 0; bs <= Math.min(bStarters, handSize-as_-ae); bs++)
+              for (let be = 0; be <= Math.min(bEngine, handSize-as_-ae-bs); be++) {
+                if (bs + be === 0) continue;
+                if (as_ > 0 && bs > 0) continue; // that's mixed, skip
+                const nd = handSize - as_ - ae - bs - be;
+                if (nd < 0 || nd > neutral) continue;
+                const p = comb(aStarters,as_)*comb(aEngine,ae)*comb(bStarters,bs)*comb(bEngine,be)*comb(neutral,nd)/totalHands;
+                // value: starter-gated archetype value + neutrals (discard cost still paid if starter present)
+                let nr = nd;
+                if (as_ > 0) nr = payDiscard(abCost, as_-1, nr);
+                if (bs > 0)  nr = payDiscard(baCost, bs-1,  nr);
+                exp += p * ((as_>0?aVal:0) + (bs>0?bVal:0) + nr);
+              }
+          }
+        return exp;
+      })()
+    : 0;
 
   // Bridge success probs for display
   const neutLeft = Math.max(0, neutral - Math.round(handSize * neutral / deckSize));
@@ -621,7 +647,7 @@ function calculate() {
 
   const expA = stats.aWith.exp + stats.aNo.exp;
   const expB = stats.bWith.exp + stats.bNo.exp;
-  const total = expA + expB + expMixed + expNeutral;
+  const total = expA + expB + expMixed + expBrick;
 
   // ── Render ──
   const avg = s => s.prob > 0 ? s.exp / s.prob : 0;
@@ -642,14 +668,14 @@ function calculate() {
     <div class="sum-cell"><div class="sum-label">From B Hands</div><div class="sum-val red">${fmt(expB)}</div></div>`;
 
   const rows = [
-    { tag:'a',   label:'Pure A + Starter', sub:'bridge accessible',        prob:stats.aWith.prob, avgI:avg(stats.aWith) },
-    { tag:'a',   label:'Pure A — Starter', sub:'engine only, no bridge',   prob:stats.aNo.prob,   avgI:avg(stats.aNo)   },
-    { tag:'b',   label:'Pure B + Starter', sub:'bridge accessible',        prob:stats.bWith.prob, avgI:avg(stats.bWith) },
-    { tag:'b',   label:'Pure B — Starter', sub:'engine only, no bridge',   prob:stats.bNo.prob,   avgI:avg(stats.bNo)   },
-    { tag:'mix', label:'Mixed',            sub:'both archetypes in hand',  prob:pMixed,            avgI:pMixed   > 0 ? expMixed   / pMixed   : 0 },
-    { tag:'neu', label:'Neutral Only',     sub:'no archetype cards drawn', prob:pNeutral,          avgI:pNeutral > 0 ? expNeutral / pNeutral : 0 },
+    { tag:'a',   label:'Pure A + Starter', sub:'bridge accessible',                    prob:stats.aWith.prob, avgI:avg(stats.aWith) },
+    { tag:'a',   label:'Pure A — Starter', sub:'engine only, no bridge',               prob:stats.aNo.prob,   avgI:avg(stats.aNo)   },
+    { tag:'b',   label:'Pure B + Starter', sub:'bridge accessible',                    prob:stats.bWith.prob, avgI:avg(stats.bWith) },
+    { tag:'b',   label:'Pure B — Starter', sub:'engine only, no bridge',               prob:stats.bNo.prob,   avgI:avg(stats.bNo)   },
+    { tag:'mix', label:'Mixed',            sub:'starters from both archetypes',        prob:pMixed,  avgI:pMixed > 0  ? expMixed / pMixed   : 0 },
+    { tag:'brk', label:'Brick',            sub:'no full combo — engine reqs or neutral', prob:pBrick, avgI:pBrick > 0 ? expBrick / pBrick  : 0 },
   ];
-  const tagLabel = { a:'A', b:'B', mix:'mix', neu:'neu' };
+  const tagLabel = { a:'A', b:'B', mix:'mix', neu:'neu', brk:'brk' };
   document.getElementById('tblBody').innerHTML = rows.map(r => `
     <tr>
       <td>
